@@ -1,0 +1,100 @@
+cabal-version: 2.2
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           BaphoNET
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/BaphoNET#readme>
+homepage:       https://github.com/Alberto-Kali/BaphoNET#readme
+bug-reports:    https://github.com/Alberto-Kali/BaphoNET/issues
+author:         Alberto Genuardy
+maintainer:     albertozaaz760@gmail.com
+copyright:      2026 Alberto Genuardy
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/Alberto-Kali/BaphoNET
+
+library
+  exposed-modules:
+      TransformController
+  other-modules:
+      Paths_BaphoNET
+  autogen-modules:
+      Paths_BaphoNET
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      aeson
+    , base >=4.7 && <5
+    , bytestring
+    , directory
+    , http-conduit
+    , pandoc
+    , servant
+    , servant-server
+    , text
+    , time
+    , transformers
+    , warp
+  default-language: Haskell2010
+
+executable BaphoNET-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_BaphoNET
+  autogen-modules:
+      Paths_BaphoNET
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      BaphoNET
+    , aeson
+    , base >=4.7 && <5
+    , bytestring
+    , directory
+    , http-conduit
+    , pandoc
+    , servant
+    , servant-server
+    , text
+    , time
+    , transformers
+    , warp
+  default-language: Haskell2010
+
+test-suite BaphoNET-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_BaphoNET
+  autogen-modules:
+      Paths_BaphoNET
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      BaphoNET
+    , aeson
+    , base >=4.7 && <5
+    , bytestring
+    , directory
+    , http-conduit
+    , pandoc
+    , servant
+    , servant-server
+    , text
+    , time
+    , transformers
+    , warp
+  default-language: Haskell2010
