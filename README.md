@@ -31,7 +31,7 @@ stack run BaphoNET-exe
 
 This Major:
 
-- [*] Getting raw data from sites and html files
+- [x] Getting raw data from sites and html files
 - [ ] File transfer support
 - [ ] EPUB/FB2/MD support
 - [ ] AI Formattiong
