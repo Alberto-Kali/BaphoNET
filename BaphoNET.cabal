@@ -5,7 +5,7 @@ cabal-version: 2.2
 -- see: https://github.com/sol/hpack
 
 name:           BaphoNET
-version:        0.1.0.0
+version:        0.0.1.0
 description:    Please see the README on GitHub at <https://github.com/githubuser/BaphoNET#readme>
 homepage:       https://github.com/Alberto-Kali/BaphoNET#readme
 bug-reports:    https://github.com/Alberto-Kali/BaphoNET/issues
