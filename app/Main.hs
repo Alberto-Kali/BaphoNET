@@ -1,32 +1,17 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeOperators #-}
-
 module Main where
 
-import TransformController (extractContent, ExtractionRequest(..), ExtractionResponse(..))
+import BaphoNET.Api (app)
+import BaphoNET.Config (loadConfig)
+import BaphoNET.Domain (AppEnv(..), AppState(..))
 
-import Servant
-import Servant.Server
-import Network.Wai.Handler.Warp
-import Data.Aeson
-import Control.Monad.IO.Class
-
-type SquareAPI = "hello" :> Get '[JSON] String
-            :<|> "transform" :> ReqBody '[JSON] ExtractionRequest :> Post '[JSON] ExtractionResponse
-
-squareAPI :: Proxy SquareAPI
-squareAPI = Proxy
-
-server :: Server SquareAPI
-server = helloHandler :<|> transformHandler
-
-helloHandler :: Handler String
-helloHandler = return "Hi"
-
-transformHandler :: ExtractionRequest -> Handler ExtractionResponse
-transformHandler body = liftIO $ extractContent body
+import Control.Concurrent.STM (newTVarIO)
+import qualified Data.Map.Strict as Map
+import Network.Wai.Handler.Warp (run)
 
 main :: IO ()
 main = do
-    putStrLn "Starting server on port 8080..."
-    run 8080 (serve squareAPI server)
+    cfg <- loadConfig
+    stateVar <- newTVarIO AppState {jobs = Map.empty, nextJobNumber = 1}
+    let env = AppEnv {config = cfg, state = stateVar}
+    putStrLn "Starting BaphoNET server on port 8080..."
+    run 8080 (app env)

@@ -25,6 +25,13 @@ source-repository head
 
 library
   exposed-modules:
+      BaphoNET.Api
+      BaphoNET.Config
+      BaphoNET.Domain
+      BaphoNET.Inference
+      BaphoNET.Pipeline
+      BaphoNET.SourceReaders
+      BaphoNET.Storage
       TransformController
   other-modules:
       Paths_BaphoNET
@@ -37,14 +44,21 @@ library
       aeson
     , base >=4.7 && <5
     , bytestring
+    , containers
     , directory
+    , filepath
+    , http-client
     , http-conduit
+    , http-media
+    , mtl
     , pandoc
     , servant
     , servant-server
+    , stm
     , text
     , time
     , transformers
+    , wai
     , warp
   default-language: Haskell2010
 
@@ -62,14 +76,21 @@ executable BaphoNET-exe
     , aeson
     , base >=4.7 && <5
     , bytestring
+    , containers
     , directory
+    , filepath
+    , http-client
     , http-conduit
+    , http-media
+    , mtl
     , pandoc
     , servant
     , servant-server
+    , stm
     , text
     , time
     , transformers
+    , wai
     , warp
   default-language: Haskell2010
 
@@ -88,13 +109,20 @@ test-suite BaphoNET-test
     , aeson
     , base >=4.7 && <5
     , bytestring
+    , containers
     , directory
+    , filepath
+    , http-client
     , http-conduit
+    , http-media
+    , mtl
     , pandoc
     , servant
     , servant-server
+    , stm
     , text
     , time
     , transformers
+    , wai
     , warp
   default-language: Haskell2010

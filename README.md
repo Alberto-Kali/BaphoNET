@@ -1,46 +1,57 @@
 # BaphoNET
-### Autonomous document parsing system to parse any data into solid formatted text with images
+### Async knowledge extraction API for links and text-first documents
 
-Baphomet using Pandoc library to transcribe smashed html into dirty text, next step is adding more file support and AI for text cleaning and right formatting
+BaphoNET now targets a text-first pipeline:
 
----
-
-## Installation:
-
-1. Download latest release from releases page
-2. Unzip in any directory
-3. Run pre-compiled binary
-```
-./bnetctl help
-```
-
-## Building:
-
-For developers want to use project or complete it:
-
-```
-git clone https://github.com/Alberto-Kali/BaphoNET
-cd BaphoNET
-stack build
-stack run BaphoNET-exe
-```
+- ingest URLs and local files
+- normalize `.html`, `.md`, `.txt`, `.epub`
+- group sources by topic
+- produce cleaned Markdown knowledge bundles
+- persist each job as filesystem artifacts
+- optionally refine semantic output through an external inference service
 
 ---
 
-## TODO
+## Runtime
 
-This Major:
+Current HTTP API:
 
-- [x] Getting raw data from sites and html files
-- [ ] File transfer support
-- [ ] EPUB/FB2/MD support
-- [ ] AI Formattiong
+- `POST /jobs`
+- `GET /jobs/:jobId`
+- `GET /jobs/:jobId/result`
+- `GET /jobs/:jobId/artifacts/:name`
+- `POST /transform` as compatibility endpoint for the old single-source flow
 
-Next Major:
+Environment variables:
 
-- [ ] L-R integration
-- [ ] OCR subsystem
-- [ ] ...
+- `BAPHONET_STORAGE_ROOT`
+- `BAPHONET_MAX_JOB_SIZE`
+- `BAPHONET_WORKER_CONCURRENCY`
+- `BAPHONET_INFERENCE_BASE_URL`
+- `BAPHONET_INFERENCE_MODEL`
+- `BAPHONET_INFERENCE_CONTEXT_TOKENS`
+- `BAPHONET_INFERENCE_TIMEOUT_SECONDS`
+
+## Building
+
+The repository currently expects a Haskell toolchain with project dependencies installed. In this environment `stack` and `cabal` are missing, so dependency bootstrap is required before building.
+
+---
+
+## Storage Layout
+
+Each processed job is stored under the configured storage root:
+
+- `job-<n>/job.json`
+- `job-<n>/artifacts/manifest.json`
+- `job-<n>/groups/<group-id>/knowledge.md`
+- `job-<n>/groups/<group-id>/metadata.json`
+
+## Next Phases
+
+- OCR/media extraction adapters
+- audio/STT pipeline
+- template rendering for `docx` and `pptx`
 
 ---
 

@@ -23,15 +23,22 @@ dependencies:
 - base >= 4.7 && < 5
 - servant
 - servant-server
+- wai
 - warp
 - aeson
 - text
 - bytestring
 - time
 - http-conduit         
+- http-client
+- http-media
 - directory             
+- mtl
 - pandoc                
 - transformers
+- containers
+- filepath
+- stm
 
 ghc-options:
 - -Wall
@@ -46,6 +53,15 @@ ghc-options:
 
 library:
   source-dirs: src
+  exposed-modules:
+  - BaphoNET.Api
+  - BaphoNET.Config
+  - BaphoNET.Domain
+  - BaphoNET.Inference
+  - BaphoNET.Pipeline
+  - BaphoNET.SourceReaders
+  - BaphoNET.Storage
+  - TransformController
 
 executables:
   BaphoNET-exe:
