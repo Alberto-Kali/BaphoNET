@@ -6,9 +6,16 @@ module BaphoNET.Domain
     , AppEnv(..)
     , AppState(..)
     , ArtifactManifest(..)
+    , BenchmarkEntry(..)
+    , BenchmarkSummary(..)
+    , BrowserFetchResult(..)
+    , CaptionBackend(..)
+    , CaptionRejection(..)
+    , CaptionSource(..)
     , ContentBlock(..)
     , CreateJobRequest(..)
     , DocumentGroup(..)
+    , FetchBackend(..)
     , GroupingMode(..)
     , ImageAsset(..)
     , ImageMention(..)
@@ -20,10 +27,15 @@ module BaphoNET.Domain
     , KnowledgeBundle(..)
     , NormalizedDocument(..)
     , OutputOptions(..)
+    , PromptProfile(..)
+    , PromptScore(..)
+    , SeleniumConfig(..)
     , SourceDescriptor(..)
     , SourceKind(..)
     , SourceType(..)
     , TermDefinition(..)
+    , VisionConfig(..)
+    , emptyBenchmarkSummary
     , emptyOutputOptions
     , emptySummary
     ) where
@@ -78,6 +90,33 @@ data JobStatus
     | JobFailed
     deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
+data FetchBackend
+    = FetchHttp
+    | FetchSelenium
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data PromptProfile
+    = PromptRecallMax
+    | PromptRecallGuarded
+    | PromptRecallStructured
+    | PromptBenchmark
+    deriving (Eq, Ord, Show, Enum, Bounded, Generic, ToJSON, FromJSON)
+
+data CaptionBackend
+    = CaptionVision
+    | CaptionFallback
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data CaptionSource
+    = CaptionFromVision
+    | CaptionFromAlt
+    | CaptionFromContext
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data CaptionRejection = CaptionRejection
+    { rejectionReason :: Text
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
 data ContentBlock
     = BlockHeading Text
     | BlockParagraph Text
@@ -93,6 +132,11 @@ data ImageAsset = ImageAsset
     , assetSurroundingTextAfter :: Text
     , assetAltText :: Maybe Text
     , assetCaption :: Maybe Text
+    , assetCaptionConfidence :: Maybe Double
+    , assetCaptionSource :: Maybe CaptionSource
+    , assetCaptionRejectedReason :: Maybe Text
+    , assetFetched :: Bool
+    , assetLocalPath :: Maybe FilePath
     , assetWarnings :: [Text]
     } deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
@@ -104,6 +148,7 @@ data TermDefinition = TermDefinition
 data ImageMention = ImageMention
     { mentionAssetId :: Text
     , mentionText :: Text
+    , mentionSource :: Maybe CaptionSource
     } deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data NormalizedDocument = NormalizedDocument
@@ -118,6 +163,27 @@ data NormalizedDocument = NormalizedDocument
     , normalizedWarnings :: [Text]
     } deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
+data PromptScore = PromptScore
+    { unsupportedFactPenalty :: Double
+    , imageHallucinationPenalty :: Double
+    , coverageScore :: Double
+    , termExplanationScore :: Double
+    , noiseLeakagePenalty :: Double
+    , sectionStructureScore :: Double
+    , aggregateScore :: Double
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data BenchmarkEntry = BenchmarkEntry
+    { benchmarkProfile :: PromptProfile
+    , benchmarkKnowledgeText :: Text
+    , benchmarkScore :: PromptScore
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data BenchmarkSummary = BenchmarkSummary
+    { benchmarkSelectedProfile :: Maybe PromptProfile
+    , benchmarkEntries :: [BenchmarkEntry]
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
 data KnowledgeBundle = KnowledgeBundle
     { knowledgeText :: Text
     , knowledgeMarkdown :: Text
@@ -128,6 +194,9 @@ data KnowledgeBundle = KnowledgeBundle
     , knowledgeTermDefinitions :: [TermDefinition]
     , knowledgeConfidence :: Double
     , knowledgeWarnings :: [Text]
+    , knowledgePromptProfile :: Maybe PromptProfile
+    , knowledgeEvaluation :: Maybe PromptScore
+    , knowledgeBenchmark :: Maybe BenchmarkSummary
     } deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data DocumentGroup = DocumentGroup
@@ -172,13 +241,38 @@ data InferenceConfig = InferenceConfig
     , inferenceTimeoutSeconds :: Int
     } deriving (Eq, Show, Generic)
 
+data VisionConfig = VisionConfig
+    { visionBaseUrl :: Maybe String
+    , visionModel :: Maybe Text
+    , visionMmprojPath :: Maybe FilePath
+    , visionImageBudget :: Int
+    , visionTimeoutSeconds :: Int
+    } deriving (Eq, Show, Generic)
+
+data SeleniumConfig = SeleniumConfig
+    { seleniumBrowser :: Text
+    , seleniumDriverUrl :: String
+    , seleniumPageTimeoutSeconds :: Int
+    } deriving (Eq, Show, Generic)
+
 data AppConfig = AppConfig
     { storageRoot :: FilePath
     , maxJobSize :: Int
     , workerConcurrency :: Int
     , allowedSourceTypes :: [SourceType]
+    , fetchBackend :: FetchBackend
+    , seleniumConfig :: SeleniumConfig
     , inferenceConfig :: InferenceConfig
+    , visionConfig :: VisionConfig
+    , promptProfile :: PromptProfile
     } deriving (Eq, Show, Generic)
+
+data BrowserFetchResult = BrowserFetchResult
+    { fetchedHtml :: Text
+    , fetchedTitle :: Maybe Text
+    , fetchedResolvedImages :: [(Text, Maybe Text)]
+    , fetchedWarnings :: [Text]
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data AppState = AppState
     { jobs :: Map Text JobRecord
@@ -198,4 +292,10 @@ emptySummary = JobSummary
     { summarySourceCount = 0
     , summaryGroupCount = 0
     , summaryWarningCount = 0
+    }
+
+emptyBenchmarkSummary :: BenchmarkSummary
+emptyBenchmarkSummary = BenchmarkSummary
+    { benchmarkSelectedProfile = Nothing
+    , benchmarkEntries = []
     }

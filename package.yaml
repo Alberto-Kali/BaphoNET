@@ -39,6 +39,8 @@ dependencies:
 - containers
 - filepath
 - stm
+- base64-bytestring
+- vector
 
 ghc-options:
 - -Wall
@@ -55,6 +57,7 @@ library:
   source-dirs: src
   exposed-modules:
   - BaphoNET.Api
+  - BaphoNET.BrowserFetcher
   - BaphoNET.Config
   - BaphoNET.Domain
   - BaphoNET.Inference

@@ -10,11 +10,15 @@ module TransformController
 
 import BaphoNET.Domain
     ( AppConfig(..)
+    , FetchBackend(..)
     , InferenceConfig(..)
     , NormalizedDocument(..)
+    , PromptProfile(..)
+    , SeleniumConfig(..)
     , SourceDescriptor(..)
     , SourceKind(..)
     , SourceType(..)
+    , VisionConfig(..)
     )
 import BaphoNET.SourceReaders (ingestSources)
 
@@ -65,6 +69,13 @@ extractContent req = do
                 , maxJobSize = 1
                 , workerConcurrency = 1
                 , allowedSourceTypes = [SourceHtml, SourceMarkdown, SourceText, SourceEpub, SourceUnknown]
+                , fetchBackend = FetchHttp
+                , seleniumConfig =
+                    SeleniumConfig
+                        { seleniumBrowser = "chromium"
+                        , seleniumDriverUrl = "http://127.0.0.1:9515"
+                        , seleniumPageTimeoutSeconds = 5
+                        }
                 , inferenceConfig =
                     InferenceConfig
                         { inferenceBaseUrl = Nothing
@@ -72,6 +83,15 @@ extractContent req = do
                         , inferenceContextTokens = 15000
                         , inferenceTimeoutSeconds = 5
                         }
+                , visionConfig =
+                    VisionConfig
+                        { visionBaseUrl = Nothing
+                        , visionModel = Nothing
+                        , visionMmprojPath = Nothing
+                        , visionImageBudget = 0
+                        , visionTimeoutSeconds = 5
+                        }
+                , promptProfile = PromptRecallGuarded
                 }
     docs <- ingestSources compatConfig [source]
     endTime <- getCurrentTime

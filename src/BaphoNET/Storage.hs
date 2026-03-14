@@ -49,6 +49,12 @@ persistGroup root groupDoc = do
     BL.writeFile
         (groupRoot </> "metadata.json")
         (encode groupDoc)
+    case knowledgeBenchmark (groupKnowledge groupDoc) of
+        Nothing -> pure ()
+        Just benchmarkSummary ->
+            BL.writeFile
+                (groupRoot </> "benchmark.json")
+                (encode benchmarkSummary)
 
 readArtifact :: AppConfig -> T.Text -> [T.Text] -> IO (Maybe BL.ByteString)
 readArtifact cfg jobIdText artifactPath = do

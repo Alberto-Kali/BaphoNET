@@ -4,11 +4,15 @@
 module BaphoNET.SourceReaders
     ( ingestSources
     , detectSourceType
+    , readUrlHttpRaw
     ) where
 
+import BaphoNET.BrowserFetcher (fetchUrlWithBrowser)
 import BaphoNET.Domain
     ( AppConfig(..)
+    , BrowserFetchResult(..)
     , ContentBlock(..)
+    , FetchBackend(..)
     , ImageAsset(..)
     , NormalizedDocument(..)
     , SourceDescriptor(..)
@@ -20,7 +24,6 @@ import Control.Applicative ((<|>))
 import Control.Exception (SomeException, try)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Char as Char
-import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -29,41 +32,49 @@ import Network.HTTP.Simple (getResponseBody, httpLBS, parseRequest)
 import System.Directory (doesFileExist)
 import System.FilePath (takeExtension)
 
+data RawSource = RawSource
+    { rawContent :: T.Text
+    , rawTitle :: Maybe T.Text
+    , rawResolvedImages :: [(T.Text, Maybe T.Text)]
+    , rawWarnings :: [T.Text]
+    }
+
 ingestSources :: AppConfig -> [SourceDescriptor] -> IO [NormalizedDocument]
 ingestSources cfg = fmap concat . mapM (ingestSource cfg)
 
 ingestSource :: AppConfig -> SourceDescriptor -> IO [NormalizedDocument]
 ingestSource cfg src = do
-    rawContent <- readRawSource src
-    case rawContent of
+    rawContentE <- readRawSource cfg src
+    case rawContentE of
         Left warningText ->
             pure
                 [ emptyDocument src SourceUnknown warningText
                 ]
-        Right content -> do
+        Right rawSourceData -> do
             let sourceType = resolveSourceType src
             if sourceType `elem` allowedSourceTypes cfg
-                then normalizeSource src sourceType content
+                then normalizeSource src sourceType rawSourceData
                 else pure [emptyDocument src sourceType "Source type is not allowed"]
 
-normalizeSource :: SourceDescriptor -> SourceType -> T.Text -> IO [NormalizedDocument]
-normalizeSource src sourceType content =
+normalizeSource :: SourceDescriptor -> SourceType -> RawSource -> IO [NormalizedDocument]
+normalizeSource src sourceType sourceData =
     case sourceType of
-        SourceHtml -> normalizeHtmlDocument src content
-        SourceMarkdown -> pure [normalizeTextDocument src sourceType content]
-        SourceText -> pure [normalizeTextDocument src sourceType content]
-        SourceEpub -> pure [normalizeTextDocument src sourceType content]
-        SourceUnknown -> pure [normalizeTextDocument src sourceType content]
+        SourceHtml -> normalizeHtmlDocument src sourceData
+        SourceMarkdown -> pure [normalizeTextDocument src sourceType (rawContent sourceData) (rawWarnings sourceData)]
+        SourceText -> pure [normalizeTextDocument src sourceType (rawContent sourceData) (rawWarnings sourceData)]
+        SourceEpub -> pure [normalizeTextDocument src sourceType (rawContent sourceData) (rawWarnings sourceData)]
+        SourceUnknown -> pure [normalizeTextDocument src sourceType (rawContent sourceData) (rawWarnings sourceData)]
 
-normalizeHtmlDocument :: SourceDescriptor -> T.Text -> IO [NormalizedDocument]
-normalizeHtmlDocument src rawHtml = do
-    let preparedHtml = preprocessHtml rawHtml
-        imageAssets = take 6 (extractImageAssets src preparedHtml)
+normalizeHtmlDocument :: SourceDescriptor -> RawSource -> IO [NormalizedDocument]
+normalizeHtmlDocument src sourceData = do
+    let rawHtml = rawContent sourceData
+        preparedHtml = preprocessHtml rawHtml
+        imageAssets = take 8 (extractImageAssets src (rawResolvedImages sourceData) preparedHtml)
         htmlWithPlaceholders = injectImagePlaceholders imageAssets preparedHtml
         plainText = htmlToPlain htmlWithPlaceholders
         cleanedLines = cleanLines (T.lines plainText)
-        titleText = sourceTitle src rawHtml cleanedLines
-        blocks = buildBlocks cleanedLines imageAssets
+        titleText = sourceTitle src sourceData cleanedLines
+        blocks = buildBlocks cleanedLines
         renderedText = blocksToText imageAssets blocks
     pure
         [ NormalizedDocument
@@ -75,9 +86,100 @@ normalizeHtmlDocument src rawHtml = do
             , normalizedPlainText = renderedText
             , normalizedBlocks = blocks
             , normalizedImages = imageAssets
-            , normalizedWarnings = []
+            , normalizedWarnings = rawWarnings sourceData
             }
         ]
+
+normalizeTextDocument :: SourceDescriptor -> SourceType -> T.Text -> [T.Text] -> NormalizedDocument
+normalizeTextDocument src sourceType content warnings =
+    let cleanedLines = cleanLines (T.lines content)
+        titleText = sourceTitle src (RawSource content Nothing [] warnings) cleanedLines
+        blocks = buildTextBlocks cleanedLines
+    in NormalizedDocument
+        { normalizedSourceId = sourceId src
+        , normalizedTitle = titleText
+        , normalizedSourceType = sourceType
+        , normalizedOriginalRef = sourceValue src
+        , normalizedDomain = extractDomain src
+        , normalizedPlainText = blocksToText [] blocks
+        , normalizedBlocks = blocks
+        , normalizedImages = []
+        , normalizedWarnings = warnings
+        }
+
+readRawSource :: AppConfig -> SourceDescriptor -> IO (Either T.Text RawSource)
+readRawSource cfg src =
+    case sourceKind src of
+        SourceUrl ->
+            case fetchBackend cfg of
+                FetchSelenium -> do
+                    browserE <- fetchUrlWithBrowser (seleniumConfig cfg) src
+                    case browserE of
+                        Right browserResult ->
+                            pure
+                                ( Right
+                                    RawSource
+                                        { rawContent = fetchedHtml browserResult
+                                        , rawTitle = fetchedTitle browserResult
+                                        , rawResolvedImages = fetchedResolvedImages browserResult
+                                        , rawWarnings = fetchedWarnings browserResult
+                                        }
+                                )
+                        Left browserErr -> do
+                            httpE <- readUrlHttp src
+                            pure $
+                                case httpE of
+                                    Left err -> Left ("selenium fetch failed: " <> browserErr <> "; http fallback failed: " <> err)
+                                    Right sourceData ->
+                                        Right sourceData
+                                            { rawWarnings =
+                                                ("selenium fetch failed: " <> browserErr) : rawWarnings sourceData
+                                            }
+                FetchHttp -> readUrlHttp src
+        SourceFile -> readFileSource src
+
+readUrlHttp :: SourceDescriptor -> IO (Either T.Text RawSource)
+readUrlHttp src = do
+    responseE <- readUrlHttpRaw (sourceValue src)
+    pure $
+        case responseE of
+            Left err -> Left err
+            Right responseBody ->
+                Right
+                    RawSource
+                        { rawContent = TE.decodeUtf8 . BL.toStrict $ responseBody
+                        , rawTitle = Nothing
+                        , rawResolvedImages = []
+                        , rawWarnings = []
+                        }
+
+readUrlHttpRaw :: T.Text -> IO (Either T.Text BL.ByteString)
+readUrlHttpRaw urlText = do
+    requestE <- try @SomeException $ parseRequest (T.unpack urlText)
+    case requestE of
+        Left ex -> pure (Left (T.pack (show ex)))
+        Right request -> do
+            responseE <- try @SomeException $ httpLBS request
+            case responseE of
+                Left ex -> pure (Left (T.pack (show ex)))
+                Right response -> pure (Right (getResponseBody response))
+
+readFileSource :: SourceDescriptor -> IO (Either T.Text RawSource)
+readFileSource src = do
+    let path = T.unpack (sourceValue src)
+    exists <- doesFileExist path
+    if exists
+        then do
+            content <- TIO.readFile path
+            pure $
+                Right
+                    RawSource
+                        { rawContent = content
+                        , rawTitle = Nothing
+                        , rawResolvedImages = []
+                        , rawWarnings = []
+                        }
+        else pure (Left ("File not found: " <> sourceValue src))
 
 preprocessHtml :: T.Text -> T.Text
 preprocessHtml =
@@ -92,7 +194,7 @@ preprocessHtml =
         . stripTagSection "footer"
 
 limitHtmlSize :: T.Text -> T.Text
-limitHtmlSize = T.take 180000
+limitHtmlSize = T.take 220000
 
 keepMainSection :: T.Text -> T.Text
 keepMainSection htmlText =
@@ -108,11 +210,15 @@ keepMainSection htmlText =
 
 breakSection :: T.Text -> T.Text -> T.Text -> Maybe T.Text
 breakSection openTag closeTag htmlText = do
-    (_, afterOpen) <- nonEmptyBreak (T.breakOn openTag htmlText)
-    let afterOpenTag = T.dropWhile (/= '>') afterOpen
+    (_, afterOpen) <- nonEmptyBreak (T.breakOn openTag (T.toLower htmlText))
+    let originalSuffix = T.drop (T.length htmlText - T.length afterOpen) htmlText
+        afterOpenTag = T.dropWhile (/= '>') originalSuffix
         contentStart = T.drop 1 afterOpenTag
-        (section, _) = T.breakOn closeTag contentStart
-    if T.null section then Nothing else Just section
+        lowerContent = T.toLower contentStart
+        (sectionLower, _) = T.breakOn closeTag lowerContent
+    if T.null sectionLower
+        then Nothing
+        else Just (T.take (T.length sectionLower) contentStart)
 
 stripTagSection :: T.Text -> T.Text -> T.Text
 stripTagSection tagName = go
@@ -121,52 +227,20 @@ stripTagSection tagName = go
     closeTag = "</" <> tagName <> ">"
 
     go textValue =
-        case T.breakOn openTag textValue of
-            (prefix, suffix)
-                | T.null suffix -> prefix
+        let lowered = T.toLower textValue
+        in case T.breakOn openTag lowered of
+            (prefixLower, suffixLower)
+                | T.null suffixLower -> textValue
                 | otherwise ->
-                    let afterOpen = T.drop (T.length openTag) suffix
-                        (_, afterClose) = T.breakOn closeTag afterOpen
-                    in if T.null afterClose
-                        then prefix
-                        else prefix <> go (T.drop (T.length closeTag) afterClose)
-
-normalizeTextDocument :: SourceDescriptor -> SourceType -> T.Text -> NormalizedDocument
-normalizeTextDocument src sourceType content =
-    let cleanedLines = cleanLines (T.lines content)
-        titleText = sourceTitle src content cleanedLines
-        blocks = buildTextBlocks cleanedLines
-    in NormalizedDocument
-        { normalizedSourceId = sourceId src
-        , normalizedTitle = titleText
-        , normalizedSourceType = sourceType
-        , normalizedOriginalRef = sourceValue src
-        , normalizedDomain = extractDomain src
-        , normalizedPlainText = blocksToText [] blocks
-        , normalizedBlocks = blocks
-        , normalizedImages = []
-        , normalizedWarnings = []
-        }
-
-readRawSource :: SourceDescriptor -> IO (Either T.Text T.Text)
-readRawSource src =
-    case sourceKind src of
-        SourceUrl -> do
-            requestE <- try @SomeException $ parseRequest (T.unpack (sourceValue src))
-            case requestE of
-                Left ex -> pure (Left (T.pack (show ex)))
-                Right request -> do
-                    responseE <- try @SomeException $ httpLBS request
-                    case responseE of
-                        Left ex -> pure (Left (T.pack (show ex)))
-                        Right response ->
-                            pure . Right . TE.decodeUtf8 . BL.toStrict $ getResponseBody response
-        SourceFile -> do
-            let path = T.unpack (sourceValue src)
-            exists <- doesFileExist path
-            if exists
-                then Right <$> TIO.readFile path
-                else pure (Left ("File not found: " <> sourceValue src))
+                    let prefixLen = T.length prefixLower
+                        suffix = T.drop prefixLen textValue
+                        afterOpen = T.drop (T.length openTag) suffix
+                        (_, afterCloseLower) = T.breakOn closeTag suffixLower
+                    in if T.null afterCloseLower
+                        then T.take prefixLen textValue
+                        else
+                            let afterClose = T.drop (T.length closeTag) (T.drop (T.length suffixLower - T.length afterCloseLower) afterOpen)
+                            in T.take prefixLen textValue <> go afterClose
 
 htmlToPlain :: T.Text -> T.Text
 htmlToPlain =
@@ -211,6 +285,7 @@ markBlockBoundaries =
         , ("<h5", "\n\n<h5")
         , ("<h6", "\n\n<h6")
         ]
+        . T.toLower
 
 stripAllTags :: T.Text -> T.Text
 stripAllTags textValue =
@@ -236,21 +311,27 @@ replaceMany :: [(T.Text, T.Text)] -> T.Text -> T.Text
 replaceMany replacements textValue =
     foldl (\acc (needle, replacement) -> T.replace needle replacement acc) textValue replacements
 
-extractImageAssets :: SourceDescriptor -> T.Text -> [ImageAsset]
-extractImageAssets src rawHtml =
+extractImageAssets :: SourceDescriptor -> [(T.Text, Maybe T.Text)] -> T.Text -> [ImageAsset]
+extractImageAssets src resolvedImages rawHtml =
     go 1 rawHtml
   where
+    resolvedMap = zip [1 :: Int ..] resolvedImages
+
     go _ remainder
         | T.null remainder = []
     go ordinal remainder =
-        case T.breakOn "<img" remainder of
-            (_, suffix) | T.null suffix -> []
-            (beforeChunk, suffix) ->
-                let afterOpen = T.drop 4 suffix
+        case T.breakOn "<img" (T.toLower remainder) of
+            (_, suffixLower) | T.null suffixLower -> []
+            (beforeChunkLower, suffixLower) ->
+                let prefixLen = T.length beforeChunkLower
+                    beforeChunk = T.take prefixLen remainder
+                    suffix = T.drop prefixLen remainder
+                    afterOpen = T.drop 4 suffix
                     (tagBody, rest) = T.breakOn ">" afterOpen
                     tagText = "<img" <> tagBody <> ">"
-                    assetRef = fromMaybe "" (extractAttribute "src" tagText)
-                    altText = extractAttribute "alt" tagText
+                    resolvedPair = lookup ordinal resolvedMap
+                    assetRef = fromMaybe (fromMaybe "" (extractAttribute "src" tagText)) (fst <$> resolvedPair)
+                    altText = (snd =<< resolvedPair) <|> extractAttribute "alt" tagText
                     following = T.drop 1 rest
                     beforeText = trimContext beforeChunk
                     afterText = trimContext following
@@ -264,6 +345,11 @@ extractImageAssets src rawHtml =
                             , assetSurroundingTextAfter = afterText
                             , assetAltText = altText
                             , assetCaption = Nothing
+                            , assetCaptionConfidence = Nothing
+                            , assetCaptionSource = Nothing
+                            , assetCaptionRejectedReason = Nothing
+                            , assetFetched = False
+                            , assetLocalPath = Nothing
                             , assetWarnings = []
                             }
                 in if isDecorativeAsset asset
@@ -275,24 +361,27 @@ injectImagePlaceholders assets = go assets
   where
     go [] htmlText = htmlText
     go (asset:rest) htmlText =
-        case T.breakOn "<img" htmlText of
-            (_, suffix) | T.null suffix -> htmlText
-            (prefix, suffix) ->
-                let afterOpen = T.drop 4 suffix
+        case T.breakOn "<img" (T.toLower htmlText) of
+            (_, suffixLower) | T.null suffixLower -> htmlText
+            (prefixLower, suffixLower) ->
+                let prefixLen = T.length prefixLower
+                    prefix = T.take prefixLen htmlText
+                    suffix = T.drop prefixLen htmlText
+                    afterOpen = T.drop 4 suffix
                     (_, restTextRaw) = T.breakOn ">" afterOpen
                     restText = T.drop 1 restTextRaw
                     placeholder = "<p>BAPHONET_IMAGE " <> assetId asset <> "</p>"
                 in prefix <> placeholder <> go rest restText
 
-buildBlocks :: [T.Text] -> [ImageAsset] -> [ContentBlock]
-buildBlocks linesList _ =
-    map toBlock linesList
+buildBlocks :: [T.Text] -> [ContentBlock]
+buildBlocks =
+    map toBlock
   where
     toBlock line
         | "BAPHONET_IMAGE " `T.isPrefixOf` line =
-            BlockImageRef (T.strip (T.drop (T.length ("BAPHONET_IMAGE " :: T.Text)) line))
+            BlockImageRef (T.strip (T.drop 15 line))
         | "baphonet_image " `T.isPrefixOf` line =
-            BlockImageRef (T.strip (T.drop (T.length ("baphonet_image " :: T.Text)) line))
+            BlockImageRef (T.strip (T.drop 15 line))
         | looksLikeHeading line = BlockHeading line
         | otherwise = BlockParagraph line
 
@@ -309,17 +398,19 @@ blocksToText :: [ImageAsset] -> [ContentBlock] -> T.Text
 blocksToText assets blocks =
     T.unlines (concatMap render blocks)
   where
-    assetMap = foldl (\acc asset -> (assetId asset, asset) : acc) [] assets
     render block =
         case block of
             BlockHeading txt -> [txt]
             BlockParagraph txt -> [txt]
             BlockImageRef imageId ->
-                case lookup imageId assetMap of
+                case lookupImage imageId assets of
                     Nothing -> []
                     Just asset ->
                         [ "Иллюстрация: " <> maybe "Изображение без описания." id (assetCaption asset <|> assetAltText asset)
                         ]
+
+lookupImage :: T.Text -> [ImageAsset] -> Maybe ImageAsset
+lookupImage imageId = foldr (\asset acc -> if assetId asset == imageId then Just asset else acc) Nothing
 
 cleanLines :: [T.Text] -> [T.Text]
 cleanLines =
@@ -375,19 +466,21 @@ normalizeWhitespace = T.unwords . T.words
 collapseBlankLines :: [T.Text] -> [T.Text]
 collapseBlankLines = reverse . foldl step []
   where
-    step acc line
-        | T.null line && not (null acc) && T.null (head acc) = acc
+    step [] line = [line]
+    step acc@(previous:_) line
+        | T.null line && T.null previous = acc
         | otherwise = line : acc
 
-sourceTitle :: SourceDescriptor -> T.Text -> [T.Text] -> T.Text
-sourceTitle src rawContent cleanedLines =
+sourceTitle :: SourceDescriptor -> RawSource -> [T.Text] -> T.Text
+sourceTitle src sourceData cleanedLines =
     case sourceLabel src of
         Just label -> label
-        Nothing -> fromMaybe (sourceId src) (htmlTitle <|> lineTitle)
+        Nothing ->
+            fromMaybe (sourceId src) (rawTitle sourceData <|> htmlTitle <|> lineTitle)
   where
     htmlTitle =
         case resolveSourceType src of
-            SourceHtml -> sanitizeTitle <$> extractHtmlTitle rawContent
+            SourceHtml -> sanitizeTitle <$> extractHtmlTitle (rawContent sourceData)
             _ -> Nothing
     lineTitle = sanitizeTitle <$> listToMaybeNonEmpty cleanedLines
 
@@ -406,15 +499,17 @@ extractMetaContent marker rawHtml = do
 
 extractTagContent :: T.Text -> T.Text -> Maybe T.Text
 extractTagContent tagName rawHtml = do
-    (_, suffix) <- nonEmptyBreak (T.breakOn ("<" <> tagName) rawHtml)
-    let afterTag = T.dropWhile (/= '>') suffix
+    (_, suffix) <- nonEmptyBreak (T.breakOn ("<" <> tagName) (T.toLower rawHtml))
+    let originalSuffix = T.drop (T.length rawHtml - T.length suffix) rawHtml
+        afterTag = T.dropWhile (/= '>') originalSuffix
         innerText = T.takeWhile (/= '<') (T.drop 1 afterTag)
     nonEmptyText innerText
 
 extractAttribute :: T.Text -> T.Text -> Maybe T.Text
 extractAttribute attrName textValue = do
-    (_, suffix) <- nonEmptyBreak (T.breakOn (attrName <> "=\"") textValue)
-    let valueStart = T.drop (T.length attrName + 2) suffix
+    (_, suffix) <- nonEmptyBreak (T.breakOn (attrName <> "=\"") (T.toLower textValue))
+    let originalSuffix = T.drop (T.length textValue - T.length suffix) textValue
+        valueStart = T.drop (T.length attrName + 2) originalSuffix
     nonEmptyText (T.takeWhile (/= '"') valueStart)
 
 trimContext :: T.Text -> T.Text
@@ -430,12 +525,13 @@ looksLikeHeading line =
 isDecorativeAsset :: ImageAsset -> Bool
 isDecorativeAsset asset =
     T.null (assetOriginalRef asset)
-        || "data:image" `T.isPrefixOf` assetOriginalRef asset
+        || "data:image" `T.isPrefixOf` T.toLower (assetOriginalRef asset)
         || ".svg" `T.isSuffixOf` T.toLower (assetOriginalRef asset)
         || "logo" `T.isInfixOf` T.toLower (assetOriginalRef asset)
         || "icon" `T.isInfixOf` T.toLower (assetOriginalRef asset)
         || "sprite" `T.isInfixOf` T.toLower (assetOriginalRef asset)
         || "share" `T.isInfixOf` T.toLower (assetOriginalRef asset)
+        || "avatar" `T.isInfixOf` T.toLower (assetOriginalRef asset)
 
 stripMarkdownImage :: T.Text -> T.Text
 stripMarkdownImage textValue
@@ -500,8 +596,8 @@ extractDomain src =
     case sourceKind src of
         SourceFile -> Nothing
         SourceUrl ->
-            let raw = T.dropWhile (/= '/') (T.dropWhile (/= ':') (sourceValue src))
-                trimmed = T.dropWhile (== '/') raw
+            let withoutScheme = snd (T.breakOn "//" (sourceValue src))
+                trimmed = T.drop 2 withoutScheme
             in if T.null trimmed then Nothing else Just (T.takeWhile (/= '/') trimmed)
 
 emptyDocument :: SourceDescriptor -> SourceType -> T.Text -> NormalizedDocument

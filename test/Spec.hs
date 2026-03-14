@@ -6,9 +6,11 @@ import BaphoNET.Config (loadConfig)
 import BaphoNET.Domain
     ( AppConfig(..)
     , ArtifactManifest(..)
+    , CaptionSource(..)
     , ContentBlock(..)
     , CreateJobRequest(..)
     , DocumentGroup(..)
+    , FetchBackend(..)
     , GroupingMode(..)
     , ImageMention(..)
     , JobRecord(..)
@@ -18,10 +20,13 @@ import BaphoNET.Domain
     , KnowledgeBundle(..)
     , NormalizedDocument(..)
     , OutputOptions(..)
+    , PromptProfile(..)
+    , SeleniumConfig(..)
     , SourceDescriptor(..)
     , SourceKind(..)
     , SourceType(..)
     , TermDefinition(..)
+    , VisionConfig(..)
     )
 import BaphoNET.Pipeline (processRequest)
 import BaphoNET.SourceReaders (detectSourceType, ingestSources)
@@ -109,10 +114,13 @@ persistenceLayoutTest = do
                         , knowledgeAbstract = "Dog knowledge"
                         , knowledgeSourceIds = ["dog-1"]
                         , knowledgeBacklinks = ["dog-source"]
-                        , knowledgeImageMentions = [ImageMention "img-1" "Иллюстрация: dog chart"]
+                        , knowledgeImageMentions = [ImageMention "img-1" "Иллюстрация: dog chart" (Just CaptionFromAlt)]
                         , knowledgeTermDefinitions = [TermDefinition "Dogs" "Домашние животные."]
                         , knowledgeConfidence = 0.9
                         , knowledgeWarnings = []
+                        , knowledgePromptProfile = Just PromptRecallGuarded
+                        , knowledgeEvaluation = Nothing
+                        , knowledgeBenchmark = Nothing
                         }
                 }
         result =

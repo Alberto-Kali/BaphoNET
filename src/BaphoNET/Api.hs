@@ -23,6 +23,7 @@ import BaphoNET.Domain
     , JobSummary(..)
     , JobStatus(..)
     , KnowledgeBundle(..)
+    , PromptProfile(..)
     , TermDefinition(..)
     , emptySummary
     )
@@ -216,6 +217,9 @@ compatToGroup compatResponse =
                 , knowledgeTermDefinitions = []
                 , knowledgeConfidence = 0.5
                 , knowledgeWarnings = []
+                , knowledgePromptProfile = Just PromptRecallGuarded
+                , knowledgeEvaluation = Nothing
+                , knowledgeBenchmark = Nothing
                 }
     in DocumentGroup
         { groupId = "compat-group"
