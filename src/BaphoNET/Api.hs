@@ -17,11 +17,13 @@ import BaphoNET.Domain
     , CreateJobRequest(..)
     , ArtifactManifest(..)
     , DocumentGroup(..)
+    , ImageMention(..)
     , JobRecord(..)
     , JobResult(..)
     , JobSummary(..)
     , JobStatus(..)
     , KnowledgeBundle(..)
+    , TermDefinition(..)
     , emptySummary
     )
 import BaphoNET.Pipeline (processRequest)
@@ -205,11 +207,13 @@ compatToGroup :: ExtractionResponse -> DocumentGroup
 compatToGroup compatResponse =
     let bundle =
             KnowledgeBundle
-                { knowledgeMarkdown = T.pack (extracted_text compatResponse)
+                { knowledgeText = T.pack (extracted_text compatResponse)
+                , knowledgeMarkdown = T.pack (extracted_text compatResponse)
                 , knowledgeAbstract = T.take 280 (T.pack (extracted_text compatResponse))
                 , knowledgeSourceIds = ["compat-source"]
                 , knowledgeBacklinks = [T.pack (extracted_from compatResponse)]
-                , knowledgeAssetRefs = []
+                , knowledgeImageMentions = []
+                , knowledgeTermDefinitions = []
                 , knowledgeConfidence = 0.5
                 , knowledgeWarnings = []
                 }

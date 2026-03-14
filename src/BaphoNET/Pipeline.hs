@@ -7,13 +7,17 @@ module BaphoNET.Pipeline
 import BaphoNET.Domain
     ( AppConfig(..)
     , ArtifactManifest(..)
+    , ContentBlock(..)
     , CreateJobRequest(..)
     , DocumentGroup(..)
+    , ImageAsset(..)
+    , ImageMention(..)
     , JobResult(..)
     , KnowledgeBundle(..)
     , NormalizedDocument(..)
+    , TermDefinition(..)
     )
-import BaphoNET.Inference (refineKnowledge)
+import BaphoNET.Renderer (renderKnowledgeText)
 import BaphoNET.SourceReaders (ingestSources)
 
 import qualified Data.Char as Char
@@ -26,12 +30,14 @@ import qualified Data.Text as T
 processRequest :: AppConfig -> T.Text -> CreateJobRequest -> IO JobResult
 processRequest cfg jobIdText request = do
     documents <- ingestSources cfg (sources request)
-    let groupedDocs = groupDocuments (userIntent request) documents
+    enrichedDocuments <- mapM (enrichDocumentImages cfg) documents
+    let groupedDocs = groupDocuments (userIntent request) enrichedDocuments
     groups <- mapM (buildGroup cfg (userIntent request)) groupedDocs
     let manifest =
             ArtifactManifest
                 { artifactNames =
                     ["job.json", "artifacts/manifest.json"]
+                        <> map (\grp -> "groups/" <> groupId grp <> "/knowledge.txt") groups
                         <> map (\grp -> "groups/" <> groupId grp <> "/knowledge.md") groups
                         <> map (\grp -> "groups/" <> groupId grp <> "/metadata.json") groups
                 }
@@ -41,24 +47,104 @@ processRequest cfg jobIdText request = do
         , resultArtifacts = manifest
         }
 
+enrichDocumentImages :: AppConfig -> NormalizedDocument -> IO NormalizedDocument
+enrichDocumentImages cfg doc = do
+    enrichedImages <- mapM enrichImage (take 2 (normalizedImages doc))
+    let remaining =
+            map ensureFallbackCaption (drop 2 (normalizedImages doc))
+        finalImages = enrichedImages <> remaining
+        rewrittenBlocks = rewriteImageBlocks finalImages (normalizedBlocks doc)
+    pure
+        doc
+            { normalizedImages = finalImages
+            , normalizedBlocks = rewrittenBlocks
+            , normalizedPlainText = blocksToPlain finalImages rewrittenBlocks
+            }
+  where
+    enrichImage asset =
+        pure asset {assetCaption = fallbackCaptionFromContext asset}
+
+    ensureFallbackCaption asset =
+        asset
+            { assetCaption =
+                case assetCaption asset of
+                    Just captionText -> Just captionText
+                    Nothing -> fallbackCaptionFromContext asset
+            }
+
+fallbackCaptionFromContext :: ImageAsset -> Maybe T.Text
+fallbackCaptionFromContext asset
+    | Just altText <- assetAltText asset
+    , T.length (T.strip altText) > 4 =
+        Just ("Изображение показывает: " <> sanitizeSentence altText)
+    | not (T.null surrounding) =
+        Just ("Иллюстрация связана с фрагментом: " <> surrounding <> ".")
+    | otherwise = Nothing
+  where
+    surrounding =
+        T.take 180 $
+            sanitizeSentence $
+                T.unwords $
+                    filter (not . T.null)
+                        [ assetSurroundingTextBefore asset
+                        , assetSurroundingTextAfter asset
+                        ]
+
+rewriteImageBlocks images =
+    map
+        (\block ->
+            case block of
+                BlockImageRef assetIdText ->
+                    case findImage assetIdText images of
+                        Just asset ->
+                            case assetCaption asset of
+                                Just captionText -> BlockParagraph ("Иллюстрация: " <> captionText)
+                                Nothing -> BlockParagraph "Иллюстрация: не добавляет новых знаний."
+                        Nothing -> block
+                _ -> block
+        )
+
+blocksToPlain images blocks =
+    T.unwords $
+        concatMap
+            (\block ->
+                case block of
+                    BlockHeading txt -> [txt]
+                    BlockParagraph txt -> [txt]
+                    BlockImageRef assetIdText ->
+                        case findImage assetIdText images of
+                            Just asset -> maybe [] (\captionText -> [captionText]) (assetCaption asset)
+                            Nothing -> []
+            )
+            blocks
+
+findImage :: T.Text -> [ImageAsset] -> Maybe ImageAsset
+findImage assetIdText = List.find (\asset -> assetId asset == assetIdText)
+
 buildGroup :: AppConfig -> Maybe T.Text -> (T.Text, [NormalizedDocument]) -> IO DocumentGroup
 buildGroup cfg mIntent (groupKey, docs) = do
-    let rawSummary = summarizeDocs docs
-        rawMarkdown = renderKnowledgeMarkdown docs
-    refined <- refineKnowledge (inferenceConfig cfg) mIntent docs rawMarkdown
-    let finalMarkdown = maybe rawMarkdown id refined
-        summaryText = T.take 280 (T.replace "\n" " " rawSummary)
+    let termDefs = extractTermDefinitions docs
+        deterministicText = renderKnowledgeText (titleForGroup groupKey docs) docs termDefs
+        deterministicSummary = summarizeDocs docs
+        imageMentions = collectImageMentions docs
+    let refined = Nothing
+    let (knowledgeTextValue, refinedTerms) =
+            case joinMaybe refined of
+                Just (refinedText, defs) -> (sanitizeStructuredText refinedText, if null defs then termDefs else defs)
+                Nothing -> (sanitizeStructuredText deterministicText, termDefs)
+        summaryText = T.take 280 (T.replace "\n" " " deterministicSummary)
         backlinks = map normalizedOriginalRef docs
-        assets = List.nub (concatMap normalizedAssets docs)
         warnings = concatMap normalizedWarnings docs
         confidenceScore = if null warnings then 0.88 else 0.55
         bundle =
             KnowledgeBundle
-                { knowledgeMarkdown = finalMarkdown
+                { knowledgeText = knowledgeTextValue
+                , knowledgeMarkdown = knowledgeTextValue
                 , knowledgeAbstract = summaryText
                 , knowledgeSourceIds = map normalizedSourceId docs
                 , knowledgeBacklinks = backlinks
-                , knowledgeAssetRefs = assets
+                , knowledgeImageMentions = imageMentions
+                , knowledgeTermDefinitions = refinedTerms
                 , knowledgeConfidence = confidenceScore
                 , knowledgeWarnings = warnings
                 }
@@ -69,6 +155,88 @@ buildGroup cfg mIntent (groupKey, docs) = do
         , groupSourceIds = map normalizedSourceId docs
         , groupKnowledge = bundle
         }
+
+joinMaybe :: Maybe (Maybe a) -> Maybe a
+joinMaybe (Just (Just value)) = Just value
+joinMaybe _ = Nothing
+
+extractTermDefinitions :: [NormalizedDocument] -> [TermDefinition]
+extractTermDefinitions docs =
+    take 12 $
+        map makeDefinition $
+            filter significantTerm $
+                Set.toList $
+                    Set.fromList $
+                        concatMap extractTerms docs
+  where
+    makeDefinition termText =
+        TermDefinition
+            { termName = termText
+            , termDefinition = explainTerm termText docs
+            }
+
+extractTerms :: NormalizedDocument -> [T.Text]
+extractTerms doc =
+    filter significantTerm $
+        map cleanToken $
+            T.words (normalizedTitle doc <> " " <> normalizedPlainText doc)
+
+cleanToken :: T.Text -> T.Text
+cleanToken =
+    T.filter (\c -> Char.isAlphaNum c || c == '-' || c == '_')
+
+significantTerm :: T.Text -> Bool
+significantTerm token =
+    T.length token >= 4
+        && token `notElem` stopWords
+        && (hasCamel token || isAbbreviation token || isTechnical token)
+  where
+    hasCamel txt = any Char.isUpper (T.unpack (T.drop 1 txt))
+    isAbbreviation txt = T.length txt <= 10 && T.all (\c -> Char.isUpper c || Char.isDigit c) txt
+    isTechnical txt = any (`T.isInfixOf` T.toLower txt) ["stat", "model", "rust", "cuda", "mcmc", "api", "glm", "cox", "next"]
+    stopWords =
+        [ "this", "that", "with", "from", "into", "для", "про", "как", "или", "это", "если" ]
+
+explainTerm :: T.Text -> [NormalizedDocument] -> T.Text
+explainTerm termText docs =
+    let contextSnippet =
+            T.unwords
+                . take 20
+                . concatMap (T.words . normalizedPlainText)
+                $ filter (\doc -> T.toLower termText `T.isInfixOf` T.toLower (normalizedPlainText doc <> " " <> normalizedTitle doc)) docs
+    in if T.null contextSnippet
+        then "Важный термин из исходного материала; требует понимания в контексте темы."
+        else "Термин из материала, связанный с контекстом: " <> contextSnippet <> "."
+
+collectImageMentions :: [NormalizedDocument] -> [ImageMention]
+collectImageMentions docs =
+    [ ImageMention
+        { mentionAssetId = assetId image
+        , mentionText = maybe "Иллюстрация без дополнительного описания." id (assetCaption image)
+        }
+    | doc <- docs
+    , image <- normalizedImages doc
+    , assetCaption image /= Nothing
+    ]
+
+sanitizeStructuredText :: T.Text -> T.Text
+sanitizeStructuredText =
+    T.unlines
+        . map sanitizeLine
+        . filter (not . T.null)
+        . T.lines
+  where
+    sanitizeLine =
+        T.replace "#" ""
+            . T.replace "*" ""
+            . T.replace "_" ""
+            . T.replace "[" ""
+            . T.replace "]" ""
+            . T.replace "(" ""
+            . T.replace ")" ""
+
+sanitizeSentence :: T.Text -> T.Text
+sanitizeSentence = T.unwords . T.words . T.replace "\n" " "
 
 groupDocuments :: Maybe T.Text -> [NormalizedDocument] -> [(T.Text, [NormalizedDocument])]
 groupDocuments mIntent docs =
@@ -114,11 +282,10 @@ tokenize :: T.Text -> Set.Set T.Text
 tokenize =
     Set.fromList
         . filter (\token -> T.length token > 2 && token `notElem` stopWords)
-        . map (T.filter (`notElem` punctuation))
+        . map (T.filter (\c -> Char.isAlphaNum c || c == '-'))
         . T.words
         . T.toLower
   where
-    punctuation = (".,!?;:()[]{}<>\"'`/\\|+-_=*#" :: String)
     stopWords =
         [ "the", "and", "for", "with", "что", "как", "или", "это", "from", "into", "для", "про", "при" ]
 
@@ -129,33 +296,9 @@ summarizeDocs docs =
         $ docs
   where
     summarizeOne doc =
-        [ "### " <> normalizedTitle doc
-        , T.unwords . take 60 . T.words $ normalizedPlainText doc
-        , ""
+        [ normalizedTitle doc
+        , T.unwords . take 40 . T.words $ normalizedPlainText doc
         ]
-
-renderKnowledgeMarkdown :: [NormalizedDocument] -> T.Text
-renderKnowledgeMarkdown docs =
-    T.unlines $
-        "# Clean knowledge"
-            : ""
-            : concatMap renderDoc docs
-  where
-    renderDoc doc =
-        [ "## " <> normalizedTitle doc
-        , renderBacklink doc
-        , ""
-        , trimNoise (normalizedMarkdown doc)
-        , ""
-        ]
-
-    renderBacklink doc = "_Source: " <> normalizedOriginalRef doc <> "_"
-
-trimNoise :: T.Text -> T.Text
-trimNoise =
-    T.unlines
-        . filter (\line -> T.length (T.strip line) > 10 || "#" `T.isPrefixOf` T.strip line)
-        . T.lines
 
 titleForGroup :: T.Text -> [NormalizedDocument] -> T.Text
 titleForGroup groupKey docs =

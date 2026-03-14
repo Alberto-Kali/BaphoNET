@@ -76,7 +76,7 @@ extractContent req = do
     docs <- ingestSources compatConfig [source]
     endTime <- getCurrentTime
     let elapsed = round (diffUTCTime endTime startTime)
-        output = T.unpack (T.intercalate "\n\n" (map normalizedMarkdown docs))
+        output = T.unpack (T.intercalate "\n\n" (map normalizedPlainText docs))
     pure
         ExtractionResponse
             { extracted_text = output

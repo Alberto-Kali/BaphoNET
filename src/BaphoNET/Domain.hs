@@ -6,9 +6,12 @@ module BaphoNET.Domain
     , AppEnv(..)
     , AppState(..)
     , ArtifactManifest(..)
+    , ContentBlock(..)
     , CreateJobRequest(..)
     , DocumentGroup(..)
     , GroupingMode(..)
+    , ImageAsset(..)
+    , ImageMention(..)
     , InferenceConfig(..)
     , JobRecord(..)
     , JobResult(..)
@@ -20,6 +23,7 @@ module BaphoNET.Domain
     , SourceDescriptor(..)
     , SourceKind(..)
     , SourceType(..)
+    , TermDefinition(..)
     , emptyOutputOptions
     , emptySummary
     ) where
@@ -74,24 +78,54 @@ data JobStatus
     | JobFailed
     deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
+data ContentBlock
+    = BlockHeading Text
+    | BlockParagraph Text
+    | BlockImageRef Text
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data ImageAsset = ImageAsset
+    { assetId :: Text
+    , assetSourceId :: Text
+    , assetOriginalRef :: Text
+    , assetOrdinal :: Int
+    , assetSurroundingTextBefore :: Text
+    , assetSurroundingTextAfter :: Text
+    , assetAltText :: Maybe Text
+    , assetCaption :: Maybe Text
+    , assetWarnings :: [Text]
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data TermDefinition = TermDefinition
+    { termName :: Text
+    , termDefinition :: Text
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data ImageMention = ImageMention
+    { mentionAssetId :: Text
+    , mentionText :: Text
+    } deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
 data NormalizedDocument = NormalizedDocument
     { normalizedSourceId :: Text
     , normalizedTitle :: Text
     , normalizedSourceType :: SourceType
     , normalizedOriginalRef :: Text
     , normalizedDomain :: Maybe Text
-    , normalizedMarkdown :: Text
     , normalizedPlainText :: Text
-    , normalizedAssets :: [Text]
+    , normalizedBlocks :: [ContentBlock]
+    , normalizedImages :: [ImageAsset]
     , normalizedWarnings :: [Text]
     } deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data KnowledgeBundle = KnowledgeBundle
-    { knowledgeMarkdown :: Text
+    { knowledgeText :: Text
+    , knowledgeMarkdown :: Text
     , knowledgeAbstract :: Text
     , knowledgeSourceIds :: [Text]
     , knowledgeBacklinks :: [Text]
-    , knowledgeAssetRefs :: [Text]
+    , knowledgeImageMentions :: [ImageMention]
+    , knowledgeTermDefinitions :: [TermDefinition]
     , knowledgeConfidence :: Double
     , knowledgeWarnings :: [Text]
     } deriving (Eq, Show, Generic, ToJSON, FromJSON)

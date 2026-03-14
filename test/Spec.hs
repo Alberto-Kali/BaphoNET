@@ -6,21 +6,25 @@ import BaphoNET.Config (loadConfig)
 import BaphoNET.Domain
     ( AppConfig(..)
     , ArtifactManifest(..)
+    , ContentBlock(..)
     , CreateJobRequest(..)
     , DocumentGroup(..)
     , GroupingMode(..)
+    , ImageMention(..)
     , JobRecord(..)
     , JobResult(..)
     , JobStatus(..)
     , JobSummary(..)
     , KnowledgeBundle(..)
+    , NormalizedDocument(..)
     , OutputOptions(..)
     , SourceDescriptor(..)
     , SourceKind(..)
     , SourceType(..)
+    , TermDefinition(..)
     )
 import BaphoNET.Pipeline (processRequest)
-import BaphoNET.SourceReaders (detectSourceType)
+import BaphoNET.SourceReaders (detectSourceType, ingestSources)
 import BaphoNET.Storage (persistJobRecord)
 
 import qualified Data.Text as T
@@ -34,7 +38,8 @@ main = do
     urlDetectionTest
     groupingTest
     persistenceLayoutTest
-    htmlSanitizationTest
+    htmlImageNormalizationTest
+    plainTextOutputTest
     putStrLn "All tests passed"
 
 sourceDetectionTest :: IO ()
@@ -47,7 +52,7 @@ sourceDetectionTest = do
                 , sourceLabel = Nothing
                 , sourceTypeHint = Nothing
                 }
-    assert (show (detectSourceType source) == "SourceEpub") "epub detection failed"
+    assert (detectSourceType source == SourceEpub) "epub detection failed"
 
 urlDetectionTest :: IO ()
 urlDetectionTest = do
@@ -64,9 +69,7 @@ urlDetectionTest = do
 groupingTest :: IO ()
 groupingTest = do
     let root = ".tmp-baphonet-test"
-    exists <- doesDirectoryExist root
-    if exists then removePathForcibly root else pure ()
-    createDirectoryIfMissing True root
+    resetDir root
     writeFile (root </> "dog-1.txt") "Dogs are loyal animals. Dogs learn commands quickly."
     writeFile (root </> "dog-2.txt") "Dog training uses reward systems. Dogs enjoy companionship."
     writeFile (root </> "cat-1.txt") "Cats are independent animals. Cats like climbing and hunting."
@@ -89,9 +92,7 @@ groupingTest = do
 persistenceLayoutTest :: IO ()
 persistenceLayoutTest = do
     let root = ".tmp-baphonet-persist"
-    exists <- doesDirectoryExist root
-    if exists then removePathForcibly root else pure ()
-    createDirectoryIfMissing True root
+    resetDir root
     cfg <- loadConfig
     now <- getCurrentTime
     let cfg' = cfg {storageRoot = root}
@@ -103,11 +104,13 @@ persistenceLayoutTest = do
                 , groupSourceIds = ["dog-1"]
                 , groupKnowledge =
                     KnowledgeBundle
-                        { knowledgeMarkdown = "# Dogs"
+                        { knowledgeText = "Заголовок:\nDogs"
+                        , knowledgeMarkdown = "legacy"
                         , knowledgeAbstract = "Dog knowledge"
                         , knowledgeSourceIds = ["dog-1"]
                         , knowledgeBacklinks = ["dog-source"]
-                        , knowledgeAssetRefs = []
+                        , knowledgeImageMentions = [ImageMention "img-1" "Иллюстрация: dog chart"]
+                        , knowledgeTermDefinitions = [TermDefinition "Dogs" "Домашние животные."]
                         , knowledgeConfidence = 0.9
                         , knowledgeWarnings = []
                         }
@@ -131,45 +134,57 @@ persistenceLayoutTest = do
                         , groupingMode = Just GroupingAuto
                         , outputOptions = Just (OutputOptions False)
                         }
-                , jobSummary =
-                    JobSummary
-                        { summarySourceCount = 1
-                        , summaryGroupCount = 1
-                        , summaryWarningCount = 0
-                        }
+                , jobSummary = JobSummary 1 1 0
                 , jobResult = Just result
                 , jobError = Nothing
                 }
     persistJobRecord cfg' record
     assertM (doesFileExist (root </> "job-persist" </> "job.json")) "job.json missing"
     assertM (doesFileExist (root </> "job-persist" </> "artifacts" </> "manifest.json")) "manifest.json missing"
-    assertM (doesFileExist (root </> "job-persist" </> "groups" </> "dogs" </> "knowledge.md")) "knowledge.md missing"
+    assertM (doesFileExist (root </> "job-persist" </> "groups" </> "dogs" </> "knowledge.txt")) "knowledge.txt missing"
     assertM (doesFileExist (root </> "job-persist" </> "groups" </> "dogs" </> "metadata.json")) "metadata.json missing"
 
-htmlSanitizationTest :: IO ()
-htmlSanitizationTest = do
+htmlImageNormalizationTest :: IO ()
+htmlImageNormalizationTest = do
     let root = ".tmp-baphonet-html"
-    exists <- doesDirectoryExist root
-    if exists then removePathForcibly root else pure ()
-    createDirectoryIfMissing True root
+    resetDir root
     writeFile
         (root </> "sample.html")
-        "<html><head><title>![ ](data:image/svg+xml;base64,AAAA) Real Title</title></head><body><nav>navigation</nav><h1>Real Title</h1><p>Useful body text.</p></body></html>"
+        "<html><head><meta property=\"og:title\" content=\"Real Title\"></head><body><p>Before image text.</p><img src=\"https://example.com/chart.png\" alt=\"Chart of throughput\"/><p>After image text.</p></body></html>"
+    cfg <- loadConfig
+    docs <- ingestSources cfg [fileSource "html-1" (root </> "sample.html")]
+    case docs of
+        doc : _ -> do
+            assert (normalizedTitle doc == "Real Title") "expected cleaned title"
+            assert (length (normalizedImages doc) == 1) "expected one image asset"
+            assert (BlockImageRef "html-1-img-1" `elem` normalizedBlocks doc) "expected image placeholder block"
+        [] -> fail "expected one normalized document"
+
+plainTextOutputTest :: IO ()
+plainTextOutputTest = do
+    let root = ".tmp-baphonet-plain"
+    resetDir root
+    writeFile
+        (root </> "sample.html")
+        "<html><head><meta property=\"og:title\" content=\"Rust Performance\"></head><body><p>NextStat uses Rust and CUDA for performance.</p><img src=\"https://example.com/chart.png\" alt=\"Throughput chart\"/><p>L-BFGS-B optimizer improves model fitting.</p></body></html>"
     cfg <- loadConfig
     let cfg' = cfg {storageRoot = root}
         request =
             CreateJobRequest
                 { sources = [fileSource "html-1" (root </> "sample.html")]
-                , userIntent = Nothing
+                , userIntent = Just "Сделай сухое знание"
                 , groupingMode = Just GroupingAuto
                 , outputOptions = Just (OutputOptions False)
                 }
-    result <- processRequest cfg' "job-html" request
-    let firstGroup = head (resultGroups result)
-        rendered = knowledgeMarkdown (groupKnowledge firstGroup)
-    assert ("Real Title" `T.isInfixOf` groupTitle firstGroup) "expected cleaned title"
-    assert (not ("data:image" `T.isInfixOf` rendered)) "data uri should be stripped"
-    assert ("Useful body text." `T.isInfixOf` rendered) "expected useful body text"
+    result <- processRequest cfg' "job-plain" request
+    case resultGroups result of
+        grp : _ -> do
+            let rendered = knowledgeText (groupKnowledge grp)
+            assert ("Заголовок:" `T.isInfixOf` rendered) "missing heading section"
+            assert ("Определения терминов:" `T.isInfixOf` rendered) "missing term definitions section"
+            assert ("Иллюстрация:" `T.isInfixOf` rendered) "missing inline image text"
+            assert (not (any (`T.isInfixOf` rendered) ["#", "*", "_", "[", "]", "(", ")"])) "unexpected markdown markers"
+        [] -> fail "expected one group"
 
 fileSource :: T.Text -> FilePath -> SourceDescriptor
 fileSource sid path =
@@ -180,6 +195,12 @@ fileSource sid path =
         , sourceLabel = Nothing
         , sourceTypeHint = Nothing
         }
+
+resetDir :: FilePath -> IO ()
+resetDir root = do
+    exists <- doesDirectoryExist root
+    if exists then removePathForcibly root else pure ()
+    createDirectoryIfMissing True root
 
 assert :: Bool -> String -> IO ()
 assert condition message =

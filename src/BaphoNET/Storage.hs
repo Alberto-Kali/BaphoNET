@@ -41,6 +41,9 @@ persistGroup root groupDoc = do
     let groupRoot = root </> "groups" </> T.unpack (groupId groupDoc)
     createDirectoryIfMissing True groupRoot
     BL.writeFile
+        (groupRoot </> "knowledge.txt")
+        (BL.fromStrict (TE.encodeUtf8 (knowledgeText (groupKnowledge groupDoc))))
+    BL.writeFile
         (groupRoot </> "knowledge.md")
         (BL.fromStrict (TE.encodeUtf8 (knowledgeMarkdown (groupKnowledge groupDoc))))
     BL.writeFile

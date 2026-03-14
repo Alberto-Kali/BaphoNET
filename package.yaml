@@ -59,6 +59,7 @@ library:
   - BaphoNET.Domain
   - BaphoNET.Inference
   - BaphoNET.Pipeline
+  - BaphoNET.Renderer
   - BaphoNET.SourceReaders
   - BaphoNET.Storage
   - TransformController
